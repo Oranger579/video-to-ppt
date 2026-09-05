@@ -2,6 +2,209 @@ import type { RefObject } from "react";
 
 import { calculateImageDifference } from "./utils";
 
+// Screenshots are used as presentation source images, so keep the original
+// canvas pixels instead of introducing JPEG compression artifacts. PNG is
+// lossless and the browser ignores the optional quality argument for it.
+const SCREENSHOT_MIME_TYPE = "image/png";
+const SCREENSHOT_DPI = 300;
+
+const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+
+function crc32(bytes: Uint8Array): number {
+	let crc = 0xffffffff;
+	for (const byte of bytes) {
+		crc ^= byte;
+		for (let bit = 0; bit < 8; bit++) {
+			crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+		}
+	}
+	return (crc ^ 0xffffffff) >>> 0;
+}
+
+/** Add a standard PNG pHYs chunk without re-encoding any image pixels. */
+async function addPngDpi(blob: Blob, dpi: number): Promise<Blob> {
+	const bytes = new Uint8Array(await blob.arrayBuffer());
+	if (bytes.length < PNG_SIGNATURE.length || !PNG_SIGNATURE.every((value, index) => bytes[index] === value)) {
+		return blob;
+	}
+
+	const chunks: Uint8Array[] = [];
+	let offset = PNG_SIGNATURE.length;
+	let inserted = false;
+	const pixelsPerMeter = Math.round(dpi / 0.0254);
+	const physData = new Uint8Array(9);
+	const physView = new DataView(physData.buffer);
+	physView.setUint32(0, pixelsPerMeter);
+	physView.setUint32(4, pixelsPerMeter);
+	physData[8] = 1;
+
+	while (offset + 12 <= bytes.length) {
+		const chunkLength = new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0);
+		const chunkEnd = offset + 12 + chunkLength;
+		if (chunkEnd > bytes.length) return blob;
+		const chunkType = new TextDecoder().decode(bytes.subarray(offset + 4, offset + 8));
+		if (chunkType !== "pHYs") {
+			const chunk = bytes.slice(offset, chunkEnd);
+			chunks.push(chunk);
+			if (chunkType === "IHDR" && !inserted) {
+				const type = new TextEncoder().encode("pHYs");
+				const chunkBody = new Uint8Array(type.length + physData.length);
+				chunkBody.set(type);
+				chunkBody.set(physData, type.length);
+				const physChunk = new Uint8Array(12 + physData.length);
+				new DataView(physChunk.buffer).setUint32(0, physData.length);
+				physChunk.set(chunkBody, 4);
+				new DataView(physChunk.buffer).setUint32(4 + chunkBody.length, crc32(chunkBody));
+				chunks.push(physChunk);
+				inserted = true;
+			}
+		}
+		offset = chunkEnd;
+		if (chunkType === "IEND") break;
+	}
+
+	const output = new Uint8Array(PNG_SIGNATURE.length + chunks.reduce((total, chunk) => total + chunk.length, 0));
+	output.set(PNG_SIGNATURE);
+	let outputOffset = PNG_SIGNATURE.length;
+	for (const chunk of chunks) {
+		output.set(chunk, outputOffset);
+		outputOffset += chunk.length;
+	}
+	return new Blob([output], { type: SCREENSHOT_MIME_TYPE });
+}
+
+function isMostlyBlackLine(data: Uint8ClampedArray, offsets: number[]): boolean {
+	let blackPixels = 0;
+	let luminanceTotal = 0;
+
+	for (const offset of offsets) {
+		const luminance = 0.2126 * data[offset] + 0.7152 * data[offset + 1] + 0.0722 * data[offset + 2];
+		luminanceTotal += luminance;
+		if (luminance <= 24) blackPixels++;
+	}
+
+	return blackPixels / offsets.length >= 0.98 && luminanceTotal / offsets.length <= 12;
+}
+
+function areSymmetricBars(first: number, second: number, dimension: number): boolean {
+	if (first < 2 || second < 2) return false;
+	return Math.abs(first - second) <= Math.max(4, Math.round(dimension * 0.01));
+}
+
+/** Remove only solid black letterbox bars, preserving the actual frame pixels. */
+function cropBlackBars(canvas: HTMLCanvasElement): HTMLCanvasElement {
+	const width = canvas.width;
+	const height = canvas.height;
+	if (width < 8 || height < 8) return canvas;
+
+	const context = canvas.getContext("2d");
+	if (!context) return canvas;
+
+	const sample = context.getImageData(0, 0, width, height);
+	const data = sample.data;
+	const sampleXStep = Math.max(1, Math.floor(width / 160));
+	const sampleYStep = Math.max(1, Math.floor(height / 160));
+	const isBlackRow = (y: number) => {
+		const offsets: number[] = [];
+		for (let x = 0; x < width; x += sampleXStep) offsets.push((y * width + x) * 4);
+		return isMostlyBlackLine(data, offsets);
+	};
+	const isBlackColumn = (x: number) => {
+		const offsets: number[] = [];
+		for (let y = 0; y < height; y += sampleYStep) offsets.push((y * width + x) * 4);
+		return isMostlyBlackLine(data, offsets);
+	};
+	const maxHorizontalCrop = Math.floor(width * 0.2);
+	const maxVerticalCrop = Math.floor(height * 0.2);
+	let left = 0;
+	let right = width - 1;
+	let top = 0;
+	let bottom = height - 1;
+
+	while (top < maxVerticalCrop && isBlackRow(top)) top++;
+	while (height - 1 - bottom < maxVerticalCrop && isBlackRow(bottom)) bottom--;
+	while (left < maxHorizontalCrop && isBlackColumn(left)) left++;
+	while (width - 1 - right < maxHorizontalCrop && isBlackColumn(right)) right--;
+
+	const horizontalBarsDetected =
+		top < maxVerticalCrop &&
+		height - 1 - bottom < maxVerticalCrop &&
+		areSymmetricBars(top, height - 1 - bottom, height);
+	const verticalBarsDetected =
+		left < maxHorizontalCrop &&
+		width - 1 - right < maxHorizontalCrop &&
+		areSymmetricBars(left, width - 1 - right, width);
+
+	if (!horizontalBarsDetected) {
+		top = 0;
+		bottom = height - 1;
+	}
+	if (!verticalBarsDetected) {
+		left = 0;
+		right = width - 1;
+	}
+
+	if (left === 0 && right === width - 1 && top === 0 && bottom === height - 1) return canvas;
+
+	const cropped = document.createElement("canvas");
+	cropped.width = right - left + 1;
+	cropped.height = bottom - top + 1;
+	cropped
+		.getContext("2d")
+		?.drawImage(canvas, left, top, cropped.width, cropped.height, 0, 0, cropped.width, cropped.height);
+	return cropped;
+}
+
+async function canvasToScreenshotBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
+	const sourceCanvas = cropBlackBars(canvas);
+	const blob = await new Promise<Blob | null>((resolve) => sourceCanvas.toBlob(resolve, SCREENSHOT_MIME_TYPE));
+	return blob ? addPngDpi(blob, SCREENSHOT_DPI) : null;
+}
+
+async function seekVideo(video: HTMLVideoElement, time: number): Promise<void> {
+	const maximumTime = Number.isFinite(video.duration) ? Math.max(video.duration - 0.001, 0) : time;
+	const targetTime = Math.min(Math.max(time, 0), maximumTime);
+
+	if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && Math.abs(video.currentTime - targetTime) < 0.001) {
+		return;
+	}
+
+	await new Promise<void>((resolve, reject) => {
+		const controller = new AbortController();
+		video.addEventListener(
+			"seeked",
+			() => {
+				controller.abort();
+				resolve();
+			},
+			{ signal: controller.signal }
+		);
+		video.addEventListener(
+			"error",
+			() => {
+				controller.abort();
+				reject(new Error("Unable to seek video"));
+			},
+			{ signal: controller.signal }
+		);
+
+		try {
+			video.currentTime = targetTime;
+		} catch (error) {
+			controller.abort();
+			reject(error);
+		}
+	});
+}
+
+function emitCanvasScreenshot(canvas: HTMLCanvasElement, onScreenshotCaptured: (screenshot: string) => void): void {
+	void canvasToScreenshotBlob(canvas)
+		.then((blob) => {
+			if (blob) onScreenshotCaptured(URL.createObjectURL(blob));
+		})
+		.catch((error) => console.error("Screenshot encoding failed:", error));
+}
+
 interface CaptureScreenshotParams {
 	videoRef: RefObject<HTMLVideoElement>;
 	canvasRef: RefObject<HTMLCanvasElement>;
@@ -37,38 +240,21 @@ export function captureAndFilterScreenshot({
 
 	onStatsUpdate();
 
-	// Check if this is a significantly different frame
+	let shouldCapture = false;
+
+	// Compare against the last saved frame. Small animation steps can then
+	// accumulate instead of being lost between adjacent samples.
 	if (lastImageDataRef.current) {
 		const difference = calculateImageDifference(lastImageDataRef.current, currentImageData);
-
-		if (difference > diffThreshold) {
-			// Convert canvas to blob and create URL
-			canvas.toBlob(
-				(blob) => {
-					if (blob) {
-						const screenshotUrl = URL.createObjectURL(blob);
-						onScreenshotCaptured(screenshotUrl);
-					}
-				},
-				"image/jpeg",
-				0.8
-			);
-		}
+		shouldCapture = difference > diffThreshold;
 	} else {
-		// First frame - always capture
-		canvas.toBlob(
-			(blob) => {
-				if (blob) {
-					const screenshotUrl = URL.createObjectURL(blob);
-					onScreenshotCaptured(screenshotUrl);
-				}
-			},
-			"image/jpeg",
-			0.8
-		);
+		shouldCapture = true;
 	}
 
-	lastImageDataRef.current = currentImageData;
+	if (shouldCapture) {
+		emitCanvasScreenshot(canvas, onScreenshotCaptured);
+		lastImageDataRef.current = currentImageData;
+	}
 }
 
 export function updateCanvasWithScreenshot(canvasRef: RefObject<HTMLCanvasElement>, screenshotUrl: string): void {
@@ -121,7 +307,7 @@ export async function processVideoWithWebAV(videoFile: File): Promise<{
 		}> = [];
 
 		// Extract frames at regular intervals
-		const frameInterval = Math.max(2, duration / 1e6 / 50); // Extract max 50 frames
+		const frameInterval = Math.max(0.5, duration / 1e6 / 200); // Sample animations while capping at 200 frames
 		const canvas = document.createElement("canvas");
 		const context = canvas.getContext("2d");
 
@@ -142,9 +328,7 @@ export async function processVideoWithWebAV(videoFile: File): Promise<{
 				context.drawImage(video, 0, 0);
 
 				// Convert to blob and create URL
-				const blob = await new Promise<Blob | null>((resolve) => {
-					canvas.toBlob(resolve, "image/jpeg", 0.8);
-				});
+				const blob = await canvasToScreenshotBlob(canvas);
 
 				if (blob) {
 					const frameUrl = URL.createObjectURL(blob);
@@ -199,58 +383,31 @@ export async function extractFramesFromVideo(
 
 	let currentTime = 0;
 	const totalDuration = video.duration;
-	let previousImageData: ImageData | null = null;
+	if (!Number.isFinite(totalDuration) || totalDuration <= 0) {
+		throw new Error("Video duration is unavailable");
+	}
+	let lastCapturedImageData: ImageData | null = null;
 	const screenshots: Blob[] = [];
-	let noNewScreenshotCount = 0;
 
 	const captureFrame = async (time: number): Promise<void> => {
-		return new Promise((resolve) => {
-			video.currentTime = time;
+		await seekVideo(video, time);
+		context.drawImage(video, 0, 0, canvas.width, canvas.height);
+		const currentImageData = context.getImageData(0, 0, canvas.width, canvas.height);
+		const shouldCapture =
+			!lastCapturedImageData || calculateImageDifference(lastCapturedImageData, currentImageData) > differenceThreshold;
 
-			video.onseeked = () => {
-				// Draw current frame
-				context.drawImage(video, 0, 0, canvas.width, canvas.height);
-				const currentImageData = context.getImageData(0, 0, canvas.width, canvas.height);
+		if (!shouldCapture || screenshots.length >= maxScreenshots) return;
 
-				let shouldCapture = false;
-
-				if (previousImageData) {
-					const difference = calculateImageDifference(previousImageData, currentImageData);
-					shouldCapture = difference > differenceThreshold;
-
-					if (!shouldCapture) {
-						noNewScreenshotCount++;
-					} else {
-						noNewScreenshotCount = 0;
-					}
-				} else {
-					shouldCapture = true; // First frame
-				}
-
-				if (shouldCapture && screenshots.length < maxScreenshots) {
-					canvas.toBlob(
-						(blob) => {
-							if (blob) {
-								screenshots.push(blob);
-								const url = URL.createObjectURL(blob);
-								onFrameCaptured(blob, url);
-							}
-							resolve();
-						},
-						"image/jpeg",
-						0.8
-					);
-				} else {
-					resolve();
-				}
-
-				previousImageData = currentImageData;
-			};
-		});
+		const blob = await canvasToScreenshotBlob(canvas);
+		if (blob) {
+			screenshots.push(blob);
+			onFrameCaptured(blob, URL.createObjectURL(blob));
+			lastCapturedImageData = currentImageData;
+		}
 	};
 
 	// Extract frames
-	while (currentTime <= totalDuration && screenshots.length < maxScreenshots) {
+	while (currentTime < totalDuration && screenshots.length < maxScreenshots) {
 		await captureFrame(currentTime);
 
 		// Update progress
@@ -258,11 +415,6 @@ export async function extractFramesFromVideo(
 		onProgress(progress);
 
 		currentTime += captureInterval;
-
-		// Stop if no new screenshots for too long
-		if (noNewScreenshotCount > 20) {
-			break;
-		}
 	}
 
 	onComplete(screenshots);
@@ -599,7 +751,10 @@ export async function preprocessVideo(video: HTMLVideoElement, canvas: HTMLCanva
 	canvas.height = video.videoHeight;
 
 	const totalDuration = video.duration;
-	const sampleCount = Math.min(50, Math.max(20, Math.floor(totalDuration / 10)));
+	if (!Number.isFinite(totalDuration) || totalDuration <= 0) {
+		throw new Error("Video duration is unavailable");
+	}
+	const sampleCount = Math.min(60, Math.max(20, Math.ceil(totalDuration / 2)));
 	const preProcessInterval = totalDuration / sampleCount;
 
 	let currentTime = 0;
@@ -607,22 +762,16 @@ export async function preprocessVideo(video: HTMLVideoElement, canvas: HTMLCanva
 	const differences: number[] = [];
 
 	const capturePreProcessFrame = async (time: number): Promise<void> => {
-		return new Promise((resolve) => {
-			video.currentTime = time;
+		await seekVideo(video, time);
+		context.drawImage(video, 0, 0, canvas.width, canvas.height);
+		const currentImageData = context.getImageData(0, 0, canvas.width, canvas.height);
 
-			video.onseeked = () => {
-				context.drawImage(video, 0, 0, canvas.width, canvas.height);
-				const currentImageData = context.getImageData(0, 0, canvas.width, canvas.height);
+		if (previousImageData) {
+			const difference = calculateImageDifference(previousImageData, currentImageData);
+			differences.push(difference);
+		}
 
-				if (previousImageData) {
-					const difference = calculateImageDifference(previousImageData, currentImageData);
-					differences.push(difference);
-				}
-
-				previousImageData = currentImageData;
-				resolve();
-			};
-		});
+		previousImageData = currentImageData;
 	};
 
 	// Sample frames for threshold calculation
@@ -631,14 +780,13 @@ export async function preprocessVideo(video: HTMLVideoElement, canvas: HTMLCanva
 		currentTime += preProcessInterval;
 	}
 
-	if (differences.length === 0) return 30; // Default threshold
+	if (differences.length === 0) return 3;
 
-	// Calculate dynamic threshold
+	// Estimate the codec/noise floor from quieter samples. A low upper bound is
+	// important for detecting animations that affect only part of a slide.
 	const sortedDifferences = [...differences].sort((a, b) => a - b);
-	const medianDiff = sortedDifferences[Math.floor(sortedDifferences.length / 2)];
-
-	// Use median as base threshold, with reasonable bounds
-	const finalThreshold = Math.max(10, Math.min(medianDiff, 60));
+	const quietDifference = sortedDifferences[Math.floor(sortedDifferences.length * 0.25)];
+	const finalThreshold = Math.max(2, Math.min(quietDifference * 2 + 1, 8));
 
 	return finalThreshold;
 }

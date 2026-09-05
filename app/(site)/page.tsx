@@ -102,7 +102,7 @@ const HomePage = () => {
 							<div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-purple-600">
 								<Video className="h-4 w-4" />
 							</div>
-							<span className="text-xl font-bold">VideoToPPT</span>
+							<span className="text-xl font-bold">{ProjectInfo.name}</span>
 						</Link>
 
 						<div className="flex items-center space-x-6">
@@ -181,7 +181,7 @@ const HomePage = () => {
 									<div className="aspect-video rounded-lg border border-zinc-600/30 overflow-hidden mb-6">
 										<Image
 											src="/hero.png"
-											alt="VideoToPPT AI视频智能剪切转换演示"
+											alt="VideoToPPT Enhanced AI视频智能剪切转换演示"
 											width={800}
 											height={450}
 											className="w-full h-full object-cover"
@@ -331,7 +331,7 @@ const HomePage = () => {
 						<div className="rounded-2xl bg-gradient-to-br from-blue-900/30 to-purple-900/30 border border-zinc-700/50 p-12 backdrop-blur-sm">
 							<h2 className="text-4xl lg:text-5xl font-bold mb-6">准备好开始了吗？</h2>
 							<p className="text-xl text-zinc-400 mb-8 max-w-2xl mx-auto">
-								立即体验Video2PPT的强大功能，将您的视频内容转换为专业演示文稿
+								立即体验 VideoToPPT Enhanced，将您的视频内容转换为专业演示文稿
 							</p>
 
 							<div className="flex flex-col sm:flex-row gap-4 justify-center">
@@ -437,7 +437,7 @@ const HomePage = () => {
 						</Link>
 
 						<div className="flex items-center space-x-6">
-							<div className="text-zinc-400 text-sm">© 2025 {ProjectInfo.name}. 基于WebAV和FFmpeg技术构建</div>
+							<div className="text-zinc-400 text-sm">© 2026 {ProjectInfo.name}. 基于WebAV和FFmpeg技术构建</div>
 							<div className="flex items-center space-x-4">
 								{Object.entries(ResumeData.contact.social).map(([key, social]) => {
 									const IconComponent = social.icon;

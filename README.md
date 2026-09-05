@@ -1,4 +1,4 @@
-# VideoToPPT 🎬➡️📊
+# VideoToPPT Enhanced 🎬➡️📊
 
 <div align="center">
 
@@ -20,14 +20,14 @@
 
 ### 🎯 核心功能
 
-| 功能 | 描述 |
-|------|------|
-| 🎥 **屏幕录制** | 实时屏幕录制，支持系统音频和麦克风 |
-| 📁 **本地视频处理** | 上传本地视频文件进行智能分析 |
-| 🧠 **智能帧提取** | 基于差异检测算法自动提取关键帧 |
-| 📊 **PPT生成** | 按图片实际比例创建演示文稿，保持原始比例并避免二次压缩 |
-| 🖼️ **图片预览** | 可滚动查看、删除并调整所有提取图片的顺序 |
-| 📥 **批量下载** | 支持单张或 ZIP 批量下载，突破浏览器同时下载数量限制 |
+| 功能                | 描述                                                   |
+| ------------------- | ------------------------------------------------------ |
+| 🎥 **屏幕录制**     | 实时屏幕录制，支持系统音频和麦克风                     |
+| 📁 **本地视频处理** | 上传本地视频文件进行智能分析                           |
+| 🧠 **智能帧提取**   | 基于差异检测算法自动提取关键帧                         |
+| 📊 **PPT生成**      | 按图片实际比例创建演示文稿，保持原始比例并避免二次压缩 |
+| 🖼️ **图片预览**     | 可滚动查看、删除并调整所有提取图片的顺序               |
+| 📥 **批量下载**     | 支持单张或 ZIP 批量下载，突破浏览器同时下载数量限制    |
 
 ### ✨ 增强版特性
 
@@ -53,17 +53,20 @@
 ## 🛠️ 技术栈
 
 ### 前端框架
+
 - **[Next.js 15](https://nextjs.org/)** - React框架，App Router
 - **[TypeScript](https://www.typescriptlang.org/)** - 类型安全的JavaScript
 - **[Tailwind CSS v4](https://tailwindcss.com/)** - 原子化CSS框架
 - **[Shadcn/ui](https://ui.shadcn.com/)** - 高质量UI组件库
 
 ### 视频处理
+
 - **[WebAV](https://github.com/hughfenghen/WebAV)** - 现代Web视频处理库
 - **[FFmpeg.wasm](https://github.com/ffmpegwasm/ffmpeg.wasm)** - 浏览器中的FFmpeg
 - **[WebCodecs API](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API)** - 原生视频编解码
 
 ### UI/UX增强
+
 - **[Lucide React](https://lucide.dev/)** - 精美的图标库
 - **[Radix UI](https://www.radix-ui.com/)** - 无样式UI基础组件
 - **[Class Variance Authority](https://cva.style/)** - 组件变体管理
@@ -80,7 +83,7 @@
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/liwenka1/video-to-ppt.git
+git clone https://github.com/Oranger579/video-to-ppt.git
 cd video-to-ppt
 
 # 2. 安装依赖
@@ -171,28 +174,21 @@ video-to-ppt/
  * 计算两个图像帧之间的差异度
  * 使用亮度值差异的均方根作为判断标准
  */
-function calculateImageDifference(
-  imgData1: ImageData,
-  imgData2: ImageData
-): number {
-  let sumOfSquares = 0;
-  const length = imgData1.data.length;
+function calculateImageDifference(imgData1: ImageData, imgData2: ImageData): number {
+	let sumOfSquares = 0;
+	const length = imgData1.data.length;
 
-  for (let i = 0; i < length; i += 4) {
-    // RGB转亮度值 (Rec. 709标准)
-    const luminance1 = 0.2126 * imgData1.data[i] +
-                      0.7152 * imgData1.data[i + 1] +
-                      0.0722 * imgData1.data[i + 2];
+	for (let i = 0; i < length; i += 4) {
+		// RGB转亮度值 (Rec. 709标准)
+		const luminance1 = 0.2126 * imgData1.data[i] + 0.7152 * imgData1.data[i + 1] + 0.0722 * imgData1.data[i + 2];
 
-    const luminance2 = 0.2126 * imgData2.data[i] +
-                      0.7152 * imgData2.data[i + 1] +
-                      0.0722 * imgData2.data[i + 2];
+		const luminance2 = 0.2126 * imgData2.data[i] + 0.7152 * imgData2.data[i + 1] + 0.0722 * imgData2.data[i + 2];
 
-    const diff = luminance1 - luminance2;
-    sumOfSquares += diff * diff;
-  }
+		const diff = luminance1 - luminance2;
+		sumOfSquares += diff * diff;
+	}
 
-  return Math.sqrt(sumOfSquares / (length / 4));
+	return Math.sqrt(sumOfSquares / (length / 4));
 }
 ```
 
@@ -203,29 +199,26 @@ function calculateImageDifference(
  * 预处理视频计算最佳差异阈值
  * 基于视频内容动态调整，提高关键帧提取准确性
  */
-async function preprocessVideo(
-  video: HTMLVideoElement,
-  canvas: HTMLCanvasElement
-): Promise<number> {
-  const duration = video.duration;
-  const sampleCount = Math.min(50, Math.max(20, Math.floor(duration / 10)));
-  const differences: number[] = [];
+async function preprocessVideo(video: HTMLVideoElement, canvas: HTMLCanvasElement): Promise<number> {
+	const duration = video.duration;
+	const sampleCount = Math.min(50, Math.max(20, Math.floor(duration / 10)));
+	const differences: number[] = [];
 
-  for (let i = 0; i < sampleCount - 1; i++) {
-    // 计算采样帧间差异
-    const time1 = (duration / sampleCount) * i;
-    const time2 = (duration / sampleCount) * (i + 1);
+	for (let i = 0; i < sampleCount - 1; i++) {
+		// 计算采样帧间差异
+		const time1 = (duration / sampleCount) * i;
+		const time2 = (duration / sampleCount) * (i + 1);
 
-    const diff = await calculateFrameDifference(video, canvas, time1, time2);
-    differences.push(diff);
-  }
+		const diff = await calculateFrameDifference(video, canvas, time1, time2);
+		differences.push(diff);
+	}
 
-  // 使用中位数作为基准阈值
-  differences.sort((a, b) => a - b);
-  const medianDiff = differences[Math.floor(differences.length / 2)];
+	// 使用中位数作为基准阈值
+	differences.sort((a, b) => a - b);
+	const medianDiff = differences[Math.floor(differences.length / 2)];
 
-  // 设置合理的阈值范围 [10, 60]
-  return Math.max(10, Math.min(medianDiff, 60));
+	// 设置合理的阈值范围 [10, 60]
+	return Math.max(10, Math.min(medianDiff, 60));
 }
 ```
 
@@ -256,18 +249,20 @@ async function preprocessVideo(
 **错误信息**: `Module not found: Can't resolve '@ffmpeg/ffmpeg'`
 
 **解决方案**:
+
 ```typescript
 // next.config.ts 中的配置
 const nextConfig = {
-  webpack: (config) => {
-    config.resolve.alias = {
-      ...config.resolve.alias,
-      '@ffmpeg/ffmpeg': '@ffmpeg/ffmpeg/dist/esm/index.js',
-    };
-    return config;
-  },
+	webpack: (config) => {
+		config.resolve.alias = {
+			...config.resolve.alias,
+			"@ffmpeg/ffmpeg": "@ffmpeg/ffmpeg/dist/esm/index.js",
+		};
+		return config;
+	},
 };
 ```
+
 </details>
 
 <details>
@@ -276,10 +271,12 @@ const nextConfig = {
 **错误信息**: `Cannot find module '@webav/av-cliper'`
 
 **解决方案**:
+
 ```bash
 # 确保安装正确版本
 pnpm add @webav/av-cliper@latest
 ```
+
 </details>
 
 <details>
@@ -288,16 +285,19 @@ pnpm add @webav/av-cliper@latest
 **错误信息**: `SharedArrayBuffer is not defined`
 
 **解决方案**: 确保在 HTTPS 环境下运行，或使用 Chrome 开启相关特性:
+
 ```bash
 # 开发环境启动参数
 chrome --enable-features=SharedArrayBuffer
 ```
+
 </details>
 
 <details>
 <summary><strong>🎥 视频格式不支持</strong></summary>
 
 **解决方案**: 工具会自动检测并转换格式，支持的输入格式:
+
 - MP4, WebM, MOV, AVI, MKV, WMV, FLV, 3GP, OGV
 </details>
 
@@ -309,7 +309,7 @@ chrome --enable-features=SharedArrayBuffer
 
 ```bash
 # 1. Fork 项目并克隆
-git clone https://github.com/your-username/video-to-ppt.git
+git clone https://github.com/Oranger579/video-to-ppt.git
 
 # 2. 创建功能分支
 git checkout -b feature/amazing-feature
@@ -330,6 +330,14 @@ git push origin feature/amazing-feature
 - **Prettier**: 统一代码格式化
 - **Conventional Commits**: 规范化提交信息
 
+## 🔗 来源与维护
+
+本仓库是 [liwenka1/video-to-ppt](https://github.com/liwenka1/video-to-ppt) 的独立增强版 fork。原项目的 MIT 许可证、版权声明和基础技术方案均予以保留；当前仓库由 [Oranger579](https://github.com/Oranger579) 维护，新增和调整内容以本仓库提交记录为准。
+
+详细的来源、许可证和修改范围说明见 [NOTICE.md](./NOTICE.md)。
+
+增强版修改集中在截图无损处理、动画与首帧检测、黑边裁剪、原比例 PPT、预览图片管理和批量下载等功能，不代表原作者对这些修改的官方认可。关于上游项目的改进建议，已另行向原仓库提交 Pull Request。
+
 ## 📄 许可证
 
 本项目采用 [MIT](./LICENSE) 许可证 - 查看 [LICENSE](./LICENSE) 文件了解详情。
@@ -340,10 +348,10 @@ git push origin feature/amazing-feature
 
 ## 📊 项目状态
 
-![GitHub Stars](https://img.shields.io/github/stars/liwenka1/video-to-ppt?style=social)
-![GitHub Forks](https://img.shields.io/github/forks/liwenka1/video-to-ppt?style=social)
-![GitHub Issues](https://img.shields.io/github/issues/liwenka1/video-to-ppt)
-![GitHub Pull Requests](https://img.shields.io/github/issues-pr/liwenka1/video-to-ppt)
+![GitHub Stars](https://img.shields.io/github/stars/Oranger579/video-to-ppt?style=social)
+![GitHub Forks](https://img.shields.io/github/forks/Oranger579/video-to-ppt?style=social)
+![GitHub Issues](https://img.shields.io/github/issues/Oranger579/video-to-ppt)
+![GitHub Pull Requests](https://img.shields.io/github/issues-pr/Oranger579/video-to-ppt)
 
 ---
 
@@ -351,8 +359,8 @@ git push origin feature/amazing-feature
 
 **🌟 如果这个项目对您有帮助，请给它一个 Star！**
 
-[⬆️ 回到顶部](#videotoppt-️)
+[⬆️ 回到顶部](#videotoppt-enhanced-️)
 
-Made with ❤️ by [liwenka1](https://github.com/liwenka1)
+Maintained with ❤️ by [Oranger579](https://github.com/Oranger579) · Based on [liwenka1/video-to-ppt](https://github.com/liwenka1/video-to-ppt)
 
 </div>

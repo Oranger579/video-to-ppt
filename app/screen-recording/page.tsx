@@ -7,6 +7,8 @@ import {
 	ArrowLeft,
 	Camera,
 	CheckCircle,
+	ChevronDown,
+	ChevronUp,
 	Download,
 	Eye,
 	Images,
@@ -18,10 +20,12 @@ import {
 	Play,
 	Settings,
 	Square,
+	Trash2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { createAndDownloadPPT } from "@/lib/ppt-generation";
+import { downloadScreenshotsAsZip } from "@/lib/screenshot-download";
 import { formatTime } from "@/lib/utils";
 import { captureAndFilterScreenshot } from "@/lib/video-processing";
 
@@ -48,35 +52,61 @@ const ScreenRecordingPage = () => {
 
 	// Media stream and recording
 	const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
+	const mediaStreamRef = useRef<MediaStream | null>(null);
 	const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 	const recordedChunksRef = useRef<Blob[]>([]);
 	const videoRef = useRef<HTMLVideoElement>(null);
 	const timerRef = useRef<NodeJS.Timeout | null>(null);
+	const screenshotTimerRef = useRef<NodeJS.Timeout | null>(null);
 
 	// Screenshot capture
 	const [screenshots, setScreenshots] = useState<string[]>([]);
 	const [screenshotStats, setScreenshotStats] = useState<ScreenshotStats>({ total: 0, saved: 0 });
+	const [isGeneratingPPT, setIsGeneratingPPT] = useState(false);
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const lastImageDataRef = useRef<ImageData | null>(null);
-	const diffThreshold = 30;
+	const diffThreshold = 3;
+
+	const removeScreenshot = useCallback((index: number) => {
+		setScreenshots((previous) => {
+			const removed = previous[index];
+			if (removed?.startsWith("blob:")) URL.revokeObjectURL(removed);
+			return previous.filter((_, itemIndex) => itemIndex !== index);
+		});
+	}, []);
+
+	const moveScreenshot = useCallback((index: number, direction: -1 | 1) => {
+		setScreenshots((previous) => {
+			const targetIndex = index + direction;
+			if (targetIndex < 0 || targetIndex >= previous.length) return previous;
+			const reordered = [...previous];
+			[reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
+			return reordered;
+		});
+	}, []);
 
 	// Video output
 	const [videoUrl, setVideoUrl] = useState<string>("");
 
 	// Cleanup function
 	const cleanup = useCallback(() => {
-		if (mediaStream) {
-			mediaStream.getTracks().forEach((track) => track.stop());
+		if (mediaStreamRef.current) {
+			mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+			mediaStreamRef.current = null;
 			setMediaStream(null);
 		}
 		if (timerRef.current) {
 			clearInterval(timerRef.current);
 			timerRef.current = null;
 		}
+		if (screenshotTimerRef.current) {
+			clearInterval(screenshotTimerRef.current);
+			screenshotTimerRef.current = null;
+		}
 		if (videoRef.current) {
 			videoRef.current.srcObject = null;
 		}
-	}, [mediaStream]);
+	}, []);
 
 	// Timer functions
 	const startTimer = useCallback(() => {
@@ -143,19 +173,22 @@ const ScreenRecordingPage = () => {
 	// Screenshot capture during recording
 	const startScreenshotCapture = useCallback(() => {
 		console.log("开始截图捕获...");
+		if (screenshotTimerRef.current) clearInterval(screenshotTimerRef.current);
 
-		// 延迟启动截图，等待视频完全准备好
-		setTimeout(() => {
-			const captureInterval = setInterval(() => {
-				if (recordingStateRef.current === "recording") {
-					captureScreenshot();
-				} else {
-					console.log("停止截图捕获，当前状态:", recordingStateRef.current);
-					clearInterval(captureInterval);
-				}
-			}, 3000); // 每3秒捕获一次
-		}, 2000); // 等待2秒让视频完全准备好
+		// Capture immediately so the first slide is not lost, then sample often
+		// enough to observe common PowerPoint animation timings.
+		captureScreenshot();
+		screenshotTimerRef.current = setInterval(() => {
+			if (recordingStateRef.current === "recording") captureScreenshot();
+		}, 500);
 	}, [captureScreenshot]);
+
+	const stopScreenshotCapture = useCallback(() => {
+		if (screenshotTimerRef.current) {
+			clearInterval(screenshotTimerRef.current);
+			screenshotTimerRef.current = null;
+		}
+	}, []);
 
 	// Start recording preparation
 	const handleStartPrepare = useCallback(async () => {
@@ -169,10 +202,14 @@ const ScreenRecordingPage = () => {
 
 			const displayMediaOptions: DisplayMediaStreamOptions = {
 				video: {
-					cursor: "always",
+					cursor: "never",
 					displaySurface: "monitor",
-					width: { ideal: 1920 },
-					height: { ideal: 1080 },
+					// Prefer high-resolution capture and never request a downscaled
+					// target. The browser will cap this at the selected display's
+					// native resolution when it is lower than 4K.
+					width: { ideal: 3840, max: 7680 },
+					height: { ideal: 2160, max: 4320 },
+					resizeMode: "none",
 					frameRate: { ideal: 30 },
 				} as MediaTrackConstraints,
 				audio: true,
@@ -186,6 +223,11 @@ const ScreenRecordingPage = () => {
 				"音频轨道:",
 				stream.getAudioTracks().length
 			);
+			const videoTrack = stream.getVideoTracks()[0];
+			if (videoTrack) {
+				const settings = videoTrack.getSettings();
+				console.log("屏幕采集实际分辨率:", `${settings.width ?? "?"}x${settings.height ?? "?"}`);
+			}
 
 			let finalStream = stream;
 
@@ -210,6 +252,7 @@ const ScreenRecordingPage = () => {
 				}
 			}
 
+			mediaStreamRef.current = finalStream;
 			setMediaStream(finalStream);
 			setRecordingState("ready");
 
@@ -257,7 +300,11 @@ const ScreenRecordingPage = () => {
 					if (videoTrack) {
 						videoTrack.addEventListener("ended", () => {
 							console.log("屏幕共享已停止");
+							recordingStateRef.current = "idle";
+							stopScreenshotCapture();
+							stopTimer();
 							setRecordingState("idle");
+							mediaStreamRef.current = null;
 							setMediaStream(null);
 						});
 					}
@@ -284,7 +331,7 @@ const ScreenRecordingPage = () => {
 				alert("录制准备失败，请检查浏览器权限设置。");
 			}
 		}
-	}, [withAudio]);
+	}, [stopScreenshotCapture, stopTimer, withAudio]);
 
 	// Start recording with stream
 	const handleStartRecording = useCallback(
@@ -349,6 +396,7 @@ const ScreenRecordingPage = () => {
 					if (recordingStream) {
 						recordingStream.getTracks().forEach((track) => track.stop());
 					}
+					mediaStreamRef.current = null;
 					setMediaStream(null);
 
 					setRecordingState("completed");
@@ -361,6 +409,7 @@ const ScreenRecordingPage = () => {
 				};
 
 				mediaRecorder.start(1000); // 每秒收集一次数据
+				recordingStateRef.current = "recording";
 				setRecordingState("recording");
 				startTimer();
 				startScreenshotCapture();
@@ -379,10 +428,12 @@ const ScreenRecordingPage = () => {
 
 		if (recordingState === "recording") {
 			mediaRecorderRef.current.pause();
+			recordingStateRef.current = "paused";
 			setRecordingState("paused");
 			stopTimer();
 		} else if (recordingState === "paused") {
 			mediaRecorderRef.current.resume();
+			recordingStateRef.current = "recording";
 			setRecordingState("recording");
 			startTimer();
 		}
@@ -390,16 +441,22 @@ const ScreenRecordingPage = () => {
 
 	// Stop recording
 	const handleStopRecording = useCallback(() => {
+		if (recordingStateRef.current === "recording") captureScreenshot();
+		stopScreenshotCapture();
+		recordingStateRef.current = "processing";
+
 		if (mediaRecorderRef.current) {
 			mediaRecorderRef.current.stop();
 		}
 
 		stopTimer();
 		setRecordingState("processing");
-	}, [stopTimer]);
+	}, [captureScreenshot, stopScreenshotCapture, stopTimer]);
 
 	// Download PPT
 	const handleDownloadPPT = useCallback(async () => {
+		if (isGeneratingPPT) return;
+		setIsGeneratingPPT(true);
 		try {
 			await createAndDownloadPPT(screenshots, {
 				title: "Screen Recording Analysis",
@@ -407,9 +464,11 @@ const ScreenRecordingPage = () => {
 			});
 		} catch (error) {
 			console.error("Error generating PPT:", error);
-			alert("PPT生成失败，请重试。");
+			alert(`PPT生成失败：${error instanceof Error ? error.message : "未知错误"}`);
+		} finally {
+			setIsGeneratingPPT(false);
 		}
-	}, [screenshots]);
+	}, [isGeneratingPPT, screenshots]);
 
 	// Download video
 	const handleDownloadVideo = useCallback(() => {
@@ -423,6 +482,7 @@ const ScreenRecordingPage = () => {
 
 	// Reset everything
 	const handleReset = useCallback(() => {
+		recordingStateRef.current = "idle";
 		setRecordingState("idle");
 		setRecordingTime(0);
 		setScreenshots([]);
@@ -642,10 +702,14 @@ const ScreenRecordingPage = () => {
 											<Button
 												onClick={handleDownloadPPT}
 												className="flex-1 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700"
-												disabled={screenshots.length === 0}
+												disabled={screenshots.length === 0 || isGeneratingPPT}
 											>
-												<Download className="mr-2 h-5 w-5" />
-												生成PPT ({screenshots.length}张)
+												{isGeneratingPPT ? (
+													<Loader2 className="mr-2 h-5 w-5 animate-spin" />
+												) : (
+													<Download className="mr-2 h-5 w-5" />
+												)}
+												{isGeneratingPPT ? "生成中..." : `生成PPT (${screenshots.length}张)`}
 											</Button>
 
 											<Button
@@ -722,19 +786,19 @@ const ScreenRecordingPage = () => {
 						{screenshots.length > 0 && (
 							<div className="rounded-2xl bg-gradient-to-br from-zinc-900/50 to-zinc-800/30 border border-zinc-700/50 p-6 backdrop-blur-sm hover:border-zinc-600/70 transition-all duration-300">
 								<div className="flex items-center justify-between mb-4">
-									<h3 className="text-lg font-semibold">截图预览 ({screenshots.length}张)</h3>
+									<div>
+										<h3 className="text-lg font-semibold">截图预览 ({screenshots.length}张)</h3>
+										<p className="text-xs text-zinc-400 mt-1">可删除图片或调整顺序，生成 PPT 将按当前顺序排列</p>
+									</div>
 									<div className="flex gap-2">
 										<Button
-											onClick={() => {
-												// 批量下载功能
-												screenshots.forEach((screenshot, index) => {
-													const link = document.createElement("a");
-													link.href = screenshot;
-													link.download = `screenshot_${String(index + 1).padStart(3, "0")}.png`;
-													document.body.appendChild(link);
-													link.click();
-													document.body.removeChild(link);
-												});
+											onClick={async () => {
+												try {
+													await downloadScreenshotsAsZip(screenshots, "screenshot");
+												} catch (error) {
+													console.error("批量下载失败:", error);
+													alert("批量下载失败，请重试。");
+												}
 											}}
 											variant="outline"
 											size="sm"
@@ -750,19 +814,19 @@ const ScreenRecordingPage = () => {
 								<div className="max-h-96 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-zinc-600 scrollbar-track-zinc-800">
 									{screenshots.map((screenshot, index) => (
 										<div
-											key={index}
+											key={screenshot}
 											className="aspect-video rounded-lg overflow-hidden border border-zinc-600/30 group relative"
 										>
 											<Image
 												src={screenshot}
 												alt={`Screenshot ${index + 1}`}
-												className="w-full h-full object-cover"
+												className="w-full h-full object-contain bg-black"
 												width={320}
 												height={180}
 												unoptimized
 											/>
-											<div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-												<div className="flex gap-2">
+											<div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity flex items-center justify-center">
+												<div className="flex flex-wrap justify-center gap-2">
 													<Button
 														onClick={() => {
 															const link = document.createElement("a");
@@ -785,6 +849,35 @@ const ScreenRecordingPage = () => {
 														variant="secondary"
 													>
 														<Eye className="h-4 w-4" />
+													</Button>
+													<Button
+														onClick={() => moveScreenshot(index, -1)}
+														size="icon"
+														variant="secondary"
+														disabled={index === 0}
+														aria-label="上移图片"
+														title="上移图片"
+													>
+														<ChevronUp className="h-4 w-4" />
+													</Button>
+													<Button
+														onClick={() => moveScreenshot(index, 1)}
+														size="icon"
+														variant="secondary"
+														disabled={index === screenshots.length - 1}
+														aria-label="下移图片"
+														title="下移图片"
+													>
+														<ChevronDown className="h-4 w-4" />
+													</Button>
+													<Button
+														onClick={() => removeScreenshot(index)}
+														size="icon"
+														variant="destructive"
+														aria-label="删除图片"
+														title="删除图片"
+													>
+														<Trash2 className="h-4 w-4" />
 													</Button>
 												</div>
 											</div>

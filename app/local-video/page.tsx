@@ -7,18 +7,22 @@ import {
 	AlertCircle,
 	ArrowLeft,
 	CheckCircle,
+	ChevronDown,
+	ChevronUp,
 	Download,
 	Eye,
 	FileVideo,
 	Images,
 	Loader2,
 	RotateCcw,
+	Trash2,
 	Upload,
 	Zap,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { createAndDownloadPPT } from "@/lib/ppt-generation";
+import { downloadScreenshotsAsZip } from "@/lib/screenshot-download";
 import { formatTime } from "@/lib/utils";
 import { diagnoseVideoFile, generateDiagnosticReport } from "@/lib/video-diagnostics";
 import { convertToMp4, extractFramesFromVideo, preprocessVideo } from "@/lib/video-processing";
@@ -35,12 +39,31 @@ const LocalVideoPage = () => {
 
 	// Video analysis results
 	const [screenshots, setScreenshots] = useState<string[]>([]);
+	const [isGeneratingPPT, setIsGeneratingPPT] = useState(false);
 	const [videoMetadata, setVideoMetadata] = useState<{
 		duration: number;
 		width: number;
 		height: number;
 		size: number;
 	} | null>(null);
+
+	const removeScreenshot = useCallback((index: number) => {
+		setScreenshots((previous) => {
+			const removed = previous[index];
+			if (removed?.startsWith("blob:")) URL.revokeObjectURL(removed);
+			return previous.filter((_, itemIndex) => itemIndex !== index);
+		});
+	}, []);
+
+	const moveScreenshot = useCallback((index: number, direction: -1 | 1) => {
+		setScreenshots((previous) => {
+			const targetIndex = index + direction;
+			if (targetIndex < 0 || targetIndex >= previous.length) return previous;
+			const reordered = [...previous];
+			[reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
+			return reordered;
+		});
+	}, []);
 
 	// Refs
 	const fileInputRef = useRef<HTMLInputElement>(null);
@@ -282,7 +305,7 @@ const LocalVideoPage = () => {
 				video,
 				canvas,
 				{
-					captureInterval: 3, // Capture every 3 seconds
+					captureInterval: 0.5,
 					differenceThreshold: dynamicThreshold,
 					maxScreenshots: 256,
 				},
@@ -308,6 +331,8 @@ const LocalVideoPage = () => {
 
 	// Download PPT
 	const handleDownloadPPT = useCallback(async () => {
+		if (isGeneratingPPT) return;
+		setIsGeneratingPPT(true);
 		try {
 			await createAndDownloadPPT(screenshots, {
 				title: selectedFile?.name || "Video Analysis",
@@ -315,9 +340,11 @@ const LocalVideoPage = () => {
 			});
 		} catch (error) {
 			console.error("Error generating PPT:", error);
-			setError("PPT生成失败，请重试");
+			setError(`PPT生成失败：${error instanceof Error ? error.message : "未知错误"}`);
+		} finally {
+			setIsGeneratingPPT(false);
 		}
-	}, [screenshots, selectedFile?.name]);
+	}, [isGeneratingPPT, screenshots, selectedFile?.name]);
 
 	// Reset everything
 	const handleReset = useCallback(() => {
@@ -498,10 +525,14 @@ const LocalVideoPage = () => {
 												<Button
 													onClick={handleDownloadPPT}
 													className="flex-1 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700"
-													disabled={screenshots.length === 0}
+													disabled={screenshots.length === 0 || isGeneratingPPT}
 												>
-													<Download className="mr-2 h-5 w-5" />
-													下载PPT ({screenshots.length}张)
+													{isGeneratingPPT ? (
+														<Loader2 className="mr-2 h-5 w-5 animate-spin" />
+													) : (
+														<Download className="mr-2 h-5 w-5" />
+													)}
+													{isGeneratingPPT ? "生成中..." : `下载PPT (${screenshots.length}张)`}
 												</Button>
 
 												<Button
@@ -602,19 +633,19 @@ const LocalVideoPage = () => {
 						{screenshots.length > 0 && (
 							<div className="rounded-2xl bg-gradient-to-br from-zinc-900/50 to-zinc-800/30 border border-zinc-700/50 p-6 backdrop-blur-sm hover:border-zinc-600/70 transition-all duration-300">
 								<div className="flex items-center justify-between mb-4">
-									<h3 className="text-lg font-semibold">预览 ({screenshots.length}张)</h3>
+									<div>
+										<h3 className="text-lg font-semibold">预览 ({screenshots.length}张)</h3>
+										<p className="text-xs text-zinc-400 mt-1">可删除图片或调整顺序，生成 PPT 将按当前顺序排列</p>
+									</div>
 									<div className="flex gap-2">
 										<Button
-											onClick={() => {
-												// 批量下载功能
-												screenshots.forEach((screenshot, index) => {
-													const link = document.createElement("a");
-													link.href = screenshot;
-													link.download = `video_frame_${String(index + 1).padStart(3, "0")}.png`;
-													document.body.appendChild(link);
-													link.click();
-													document.body.removeChild(link);
-												});
+											onClick={async () => {
+												try {
+													await downloadScreenshotsAsZip(screenshots, "video_frame");
+												} catch (error) {
+													console.error("批量下载失败:", error);
+													alert("批量下载失败，请重试。");
+												}
 											}}
 											variant="outline"
 											size="sm"
@@ -630,7 +661,7 @@ const LocalVideoPage = () => {
 								<div className="max-h-96 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-zinc-600 scrollbar-track-zinc-800">
 									{screenshots.map((screenshot, index) => (
 										<div
-											key={index}
+											key={screenshot}
 											className="aspect-video rounded-lg overflow-hidden border border-zinc-600/30 group relative"
 										>
 											<Image
@@ -638,11 +669,11 @@ const LocalVideoPage = () => {
 												alt={`Frame ${index + 1}`}
 												width={300}
 												height={200}
-												className="w-full h-full object-cover"
+												className="w-full h-full object-contain bg-black"
 												unoptimized
 											/>
-											<div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-												<div className="flex gap-2">
+											<div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity flex items-center justify-center">
+												<div className="flex flex-wrap justify-center gap-2">
 													<Button
 														onClick={() => {
 															const link = document.createElement("a");
@@ -665,6 +696,35 @@ const LocalVideoPage = () => {
 														variant="secondary"
 													>
 														<Eye className="h-4 w-4" />
+													</Button>
+													<Button
+														onClick={() => moveScreenshot(index, -1)}
+														size="icon"
+														variant="secondary"
+														disabled={index === 0}
+														aria-label="上移图片"
+														title="上移图片"
+													>
+														<ChevronUp className="h-4 w-4" />
+													</Button>
+													<Button
+														onClick={() => moveScreenshot(index, 1)}
+														size="icon"
+														variant="secondary"
+														disabled={index === screenshots.length - 1}
+														aria-label="下移图片"
+														title="下移图片"
+													>
+														<ChevronDown className="h-4 w-4" />
+													</Button>
+													<Button
+														onClick={() => removeScreenshot(index)}
+														size="icon"
+														variant="destructive"
+														aria-label="删除图片"
+														title="删除图片"
+													>
+														<Trash2 className="h-4 w-4" />
 													</Button>
 												</div>
 											</div>

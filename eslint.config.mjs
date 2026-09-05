@@ -22,7 +22,7 @@ export default [
 			prettier,
 		},
 		rules: {
-			"prettier/prettier": "error",
+			"prettier/prettier": ["error", { endOfLine: "auto" }],
 			camelcase: "off",
 			"import/prefer-default-export": "off",
 			"react/jsx-filename-extension": "off",
